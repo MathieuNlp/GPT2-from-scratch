@@ -13,7 +13,12 @@ class Block(nn.Module):
         self.mlp = MLP(config)
 
     def forward(self, x):
+        # Clean residual pathways are desirable for gradients. (+ operation splits the gradient in backprob cf. micrograd)
         x = x + self.attn(self.ln_1(x))
+        x = x + self.mlp(self.ln_2(x))
+        
+        return x
+
 class GPT(nn.Module):
     
     def __init__(self, config: GPTConfig):
