@@ -87,8 +87,25 @@ class GPT(nn.Module):
             h = nn.ModuleList(Block(config) for _ in range(config.n_layer)), # There are 12 layers in the gpt model => 12 Blocks
             ln_f = nn.LayerNorm(config.n_embd)
         ))
-
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+
+    def forward(self, idx):
+        # idx is shape (B, T)
+        B, T = idx.size()
+        assert T <= self.config.block_size, f"Cannot forward sequence of length {T}, block size is smaller"
+        # forard the token and position embeddings
+        pos = torch.arange(0, T, dtype=torch.long, device=idx.device) # shape (T)
+        pos_emb = self.transformer.wpe(pos) # position embeddings of shape (T, n_embd)
+        tok_emb = self.transformer.wte(idx) # token mebeddings of shape (B, T, n_embd)
+        x = tok_emb + pos_emb
+        # forward the blocks of the transformer
+        for block in self.transformer.h:
+            x = block(x)
+        # forward the final layernorm and the classifier
+        x = self.transformer.ln_f(x)
+        logits = self.lm_head(x) # (B, T, vocab_size) shape where the dim of vocab_size consists of values between ]-inf; +inf[ for each elements in the vocab
+
+        return logits
 
     @classmethod
     def from_pretrained(cls, model_type):
@@ -142,5 +159,42 @@ class GPT(nn.Module):
     
 
 if __name__ == "__main__":
+    num_return_sequences = 5
+    max_length = 30
+
     model = GPT.from_pretrained('gpt2')
-    print("Model loaded sucessfully!")
+    model.eval()
+    model.to("cuda")
+
+    # prefix tokens
+    import tiktoken
+    enc = tiktoken.get_encoding('gpt2')
+    tokens = enc.encode("Hello, I'm a language model,")
+    tokens = torch.tensor(tokens, dtype=torch.long) # (8,)
+    tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1) # (5, 8)
+    x = tokens.to('cuda')
+    
+    # generate! right now x is (B, T) where B = 5, T = 8
+    # set the seed to 42
+    torch.manual_seed(42)
+    torch.cuda.manual_seed(42)
+    while x.size(1) < max_length:
+        # forward the mode to get the logits
+        with torch.no_grad():
+            logits = model(x) # (B, T, vocab_size)
+            # take the logits at the last position
+            logits = logits[:, -1, :] # (B, vocab_size)
+            # get the probabilities
+            probs = F.softmax(logits, dim=-1) # (B, vocab_size) shape
+        # do top-k sampling of 50 (huggingface pipeline default)
+        # topk_probs here becomes (B=5, 50), topk_indices is (5, 50)
+        topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)
+        # select a token from the top-k probabilities
+        ix = torch.multinomial(topk_probs, 1) # (B, 1)
+        # gather the corresponding indices
+        xcol = torch.gather(topk_indices, -1, ix) # (B, 1)
+        # append to the sequence
+        x = torch.cat((x, xcol), dim=1) 
+
+
+
