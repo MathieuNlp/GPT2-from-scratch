@@ -33,7 +33,7 @@ class CausalSelfAttention(nn.Module):
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         # attention (materializes the large (T,T) matrix for all the queries and keys)
         att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-        att = att.masked_fill(self.bias[:,:,:,:T,:T] == 0, float('-inf'))
+        att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
         att = F.softmax(att, dim=-1)
         y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
         y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
@@ -161,10 +161,11 @@ class GPT(nn.Module):
 if __name__ == "__main__":
     num_return_sequences = 5
     max_length = 30
-
-    model = GPT.from_pretrained('gpt2')
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    # model = GPT.from_pretrained('gpt2')
+    model = GPT(GPTConfig())
     model.eval()
-    model.to("cuda")
+    model.to(device)
 
     # prefix tokens
     import tiktoken
@@ -186,15 +187,19 @@ if __name__ == "__main__":
             logits = logits[:, -1, :] # (B, vocab_size)
             # get the probabilities
             probs = F.softmax(logits, dim=-1) # (B, vocab_size) shape
-        # do top-k sampling of 50 (huggingface pipeline default)
-        # topk_probs here becomes (B=5, 50), topk_indices is (5, 50)
-        topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)
-        # select a token from the top-k probabilities
-        ix = torch.multinomial(topk_probs, 1) # (B, 1)
-        # gather the corresponding indices
-        xcol = torch.gather(topk_indices, -1, ix) # (B, 1)
-        # append to the sequence
-        x = torch.cat((x, xcol), dim=1) 
+            # do top-k sampling of 50 (huggingface pipeline default)
+            # topk_probs here becomes (B=5, 50), topk_indices is (5, 50)
+            topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)
+            # select a token from the top-k probabilities
+            ix = torch.multinomial(topk_probs, 1) # (B, 1)
+            # gather the corresponding indices
+            xcol = torch.gather(topk_indices, -1, ix) # (B, 1)
+            # append to the sequence
+            x = torch.cat((x, xcol), dim=1) 
 
-
+# print the generated text
+for i in range(num_return_sequences):
+    tokens = x[i, :max_length].tolist()
+    decoded = enc.decode(tokens)
+    print(">", decoded)
 
