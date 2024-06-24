@@ -89,14 +89,14 @@ class GPT(nn.Module):
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
 
-    def forward(self, idx):
+    def forward(self, idx, targets=None):
         # idx is shape (B, T)
         B, T = idx.size()
         assert T <= self.config.block_size, f"Cannot forward sequence of length {T}, block size is smaller"
         # forard the token and position embeddings
         pos = torch.arange(0, T, dtype=torch.long, device=idx.device) # shape (T)
         pos_emb = self.transformer.wpe(pos) # position embeddings of shape (T, n_embd)
-        tok_emb = self.transformer.wte(idx) # token mebeddings of shape (B, T, n_embd)
+        tok_emb = self.transformer.wte(idx) # token emebeddings of shape (B, T, n_embd)
         x = tok_emb + pos_emb
         # forward the blocks of the transformer
         for block in self.transformer.h:
@@ -104,8 +104,12 @@ class GPT(nn.Module):
         # forward the final layernorm and the classifier
         x = self.transformer.ln_f(x)
         logits = self.lm_head(x) # (B, T, vocab_size) shape where the dim of vocab_size consists of values between ]-inf; +inf[ for each elements in the vocab
+        loss = None
+        print(logits, targets)
+        if targets is not None:
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
 
-        return logits
+        return logits, loss
 
     @classmethod
     def from_pretrained(cls, model_type):
@@ -197,9 +201,9 @@ if __name__ == "__main__":
             # append to the sequence
             x = torch.cat((x, xcol), dim=1) 
 
-# print the generated text
-for i in range(num_return_sequences):
-    tokens = x[i, :max_length].tolist()
-    decoded = enc.decode(tokens)
-    print(">", decoded)
+    # print the generated text
+    for i in range(num_return_sequences):
+        tokens = x[i, :max_length].tolist()
+        decoded = enc.decode(tokens)
+        print(">", decoded)
 
