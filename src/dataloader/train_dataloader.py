@@ -38,6 +38,9 @@ if __name__ == "__main__":
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"using device: {device}")
 
+    torch.manual_seed(1337)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(1337)
 
     B, T = 4, 32
     train_loader = DataLoaderLite(B, T)
@@ -51,6 +54,7 @@ if __name__ == "__main__":
         x, y = x.to(device), y.to(device)
         optimizer.zero_grad()
         logits, loss = model(x, y)
+        import code; code.interact(local=locals())
         loss.backward()
         optimizer.step()
         print(f"step {i}, loss {loss.item()}")

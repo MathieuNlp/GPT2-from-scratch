@@ -14,6 +14,7 @@ class CausalSelfAttention(nn.Module):
         self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd)
         # output projection
         self.c_proj = nn.Linear(config.n_embd, config.n_embd)
+        self.c_proj.NANOGPT_SCALE_INIT = 1
         # regularization
         self.n_head = config.n_head
         self.n_embd = config.n_embd
@@ -97,8 +98,11 @@ class GPT(nn.Module):
 
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
+            std = 0.02
+            if hasattr(module, 'NANOGPT_SCALE_INIT'):
+                std *= (2 * self.config.n_layer) ** -0.5 # 2 comes from the 2 residual connections (1 at attention, 1 at the Block (MLP))
             # Xavier initialization: why std of 0.02 => std = 1/sqrt(d) where d is the number of features of the vector => 1/sqrt(768) = 0.03 and 1/sqrt(1600)=0.025
-            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            torch.nn.init.normal_(module.weight, mean=0.0, std=std)
             if module.bias is not None:
                 torch.nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
@@ -181,6 +185,7 @@ if __name__ == "__main__":
     num_return_sequences = 5
     max_length = 30
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"using device: {device}")
     # model = GPT.from_pretrained('gpt2')
     model = GPT(GPTConfig())
     model.eval()
