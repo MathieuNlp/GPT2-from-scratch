@@ -89,6 +89,22 @@ class GPT(nn.Module):
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
 
+        # weight staring scheme: the same matrix to get the embeddings from tokens is used at the end before the softmax to generate the logits (in transformer paper)
+        self.transformer.wte.weight = self.lm_head.weight
+
+        # init weights
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            # Xavier initialization: why std of 0.02 => std = 1/sqrt(d) where d is the number of features of the vector => 1/sqrt(768) = 0.03 and 1/sqrt(1600)=0.025
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+        # Pytorch automatically set the inintialization of LayerNorm of std=1 and mean=0
+
     def forward(self, idx, targets=None):
         # idx is shape (B, T)
         B, T = idx.size()
@@ -105,7 +121,6 @@ class GPT(nn.Module):
         x = self.transformer.ln_f(x)
         logits = self.lm_head(x) # (B, T, vocab_size) shape where the dim of vocab_size consists of values between ]-inf; +inf[ for each elements in the vocab
         loss = None
-        print(logits, targets)
         if targets is not None:
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
 
@@ -177,7 +192,7 @@ if __name__ == "__main__":
     tokens = enc.encode("Hello, I'm a language model,")
     tokens = torch.tensor(tokens, dtype=torch.long) # (8,)
     tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1) # (5, 8)
-    x = tokens.to('cuda')
+    x = tokens.to(device)
     
     # generate! right now x is (B, T) where B = 5, T = 8
     # set the seed to 42
@@ -186,7 +201,7 @@ if __name__ == "__main__":
     while x.size(1) < max_length:
         # forward the mode to get the logits
         with torch.no_grad():
-            logits = model(x) # (B, T, vocab_size)
+            logits, loss = model(x) # (B, T, vocab_size)
             # take the logits at the last position
             logits = logits[:, -1, :] # (B, vocab_size)
             # get the probabilities
