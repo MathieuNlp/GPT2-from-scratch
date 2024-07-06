@@ -2,6 +2,7 @@ import torch
 import math
 import torch.nn as nn
 from torch.nn import functional as F
+import inspect
 
 from config.config import GPTConfig
 
@@ -47,7 +48,6 @@ class CausalSelfAttention(nn.Module):
         return y
 
 
-
 class MLP(nn.Module):
     def __init__(self, config: GPTConfig):
         super().__init__()
@@ -61,6 +61,7 @@ class MLP(nn.Module):
         x = self.c_proj(x)
 
         return x
+
 
 class Block(nn.Module):
     def __init__(self, config: GPTConfig):
@@ -77,6 +78,7 @@ class Block(nn.Module):
         x = x + self.mlp(self.ln_2(x)) # We can see the MLP part as thinking process gathered by the attention process. Because MLP access all the tokens
         
         return x
+
 
 class GPT(nn.Module):
     
@@ -99,19 +101,6 @@ class GPT(nn.Module):
         # init weights
         self.apply(self._init_weights)
 
-    def _init_weights(self, module):
-        if isinstance(module, nn.Linear):
-            std = 0.02
-            if hasattr(module, 'NANOGPT_SCALE_INIT'):
-                std *= (2 * self.config.n_layer) ** -0.5 # 2 comes from the 2 residual connections (1 at attention, 1 at the Block (MLP))
-            # Xavier initialization: why std of 0.02 => std = 1/sqrt(d) where d is the number of features of the vector => 1/sqrt(768) = 0.03 and 1/sqrt(1600)=0.025
-            torch.nn.init.normal_(module.weight, mean=0.0, std=std)
-            if module.bias is not None:
-                torch.nn.init.zeros_(module.bias)
-        elif isinstance(module, nn.Embedding):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
-        # Pytorch automatically set the inintialization of LayerNorm of std=1 and mean=0
-
     def forward(self, idx, targets=None):
         # idx is shape (B, T)
         B, T = idx.size()
@@ -132,6 +121,43 @@ class GPT(nn.Module):
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
 
         return logits, loss
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            std = 0.02
+            if hasattr(module, 'NANOGPT_SCALE_INIT'):
+                std *= (2 * self.config.n_layer) ** -0.5 # 2 comes from the 2 residual connections (1 at attention, 1 at the Block (MLP))
+            # Xavier initialization: why std of 0.02 => std = 1/sqrt(d) where d is the number of features of the vector => 1/sqrt(768) = 0.03 and 1/sqrt(1600)=0.025
+            torch.nn.init.normal_(module.weight, mean=0.0, std=std)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+        # Pytorch automatically set the inintialization of LayerNorm of std=1 and mean=0
+
+    def configure_optimizers(self, weight_decay, learning_rate, device):
+        # start with all of the candidate parameters (that require grad)
+        param_dict = {pn: p for pn, p in self.named_parameters()}
+        param_dict = {pn: p for pn, p in param_dict.items() if p.requires_grad}
+        # create optim groups. Any parameters that is 2D will be weight decayed, otherwise no
+        # i.e all weight tensors in matmuls + embeddings decay, all scales, biases and layernorms don't
+        decay_params = [p for n, p in param_dict.items() if p.dim() >= 2]
+        nodecay_params = [p for n, p in param_dict.items() if p.dim() < 2]
+        optim_groups = [
+            {'params': decay_params, 'weight_decay': weight_decay},
+            {'params': nodecay_params, 'weig  ht_decay': 0.0}
+        ]
+        num_decay_params = sum(p.numel() for p in decay_params)
+        num_nodecay_params = sum(p.numel() for p in nodecay_params)
+        print(f"num decayed paramter tensors: {len(decay_params)} with {num_decay_params:,} parameters")
+        print(f"num non-decayed paramter tensors: {len(nodecay_params)} with {num_nodecay_params:,} parameters")
+        # Create AdamW optimizer and use the fused version if it is available
+        fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
+        use_fused = fused_available and 'cuda' in device
+        print(f"using fused AdamW: {use_fused}")
+        optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=(0.9, 0.95), eps=1e-8, fused=use_fused)
+        
+        return optimizer
 
     @classmethod
     def from_pretrained(cls, model_type):
@@ -183,6 +209,8 @@ class GPT(nn.Module):
         
         return model
     
+
+
 
 if __name__ == "__main__":
     num_return_sequences = 5
