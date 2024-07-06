@@ -44,8 +44,17 @@ if __name__ == "__main__":
     if torch.cuda.is_available():
         torch.cuda.manual_seed(1337)
 
-    B, T = 8, 256
-    train_loader = DataLoaderLite(B, T)
+    # total_batch_size = 524288 # 2**19, ~0.5M, in numbers of tokens => 0.5M is the batch size from GPT-3 paper, where batch size is B*T
+    total_batch_size = 16_384 # Reduce the total batch size for low memory => Otherwise too long to do all the accumulations
+    B = 4 # micro batch size
+    T = 256 # sequence length
+
+    assert total_batch_size % (B * T) == 0, "make sure total_batch_size is divisible by B * T"
+    grad_accum_steps = total_batch_size // (B * T)
+    print(f"total desired batch size: {total_batch_size}")
+    print(f"=> calculated gradient accumulation steps: {grad_accum_steps}")
+
+    train_loader = DataLoaderLite(B=B, T=T)
 
     torch.set_float32_matmul_precision('high') # Allows to change the precsion from FP32 to TF32
 
@@ -76,12 +85,20 @@ if __name__ == "__main__":
 
     for step in range(max_steps):
         t0 = time.time()
-        x, y = train_loader.next_batch()
-        x, y = x.to(device), y.to(device)
         optimizer.zero_grad()
-        with torch.autocast(device_type=device, dtype=torch.bfloat16): # only put the forward pass in the autocast (optimizer and backprop is outside)
-            logits, loss = model(x, y)
-        loss.backward()
+        loss_accum = 0.0
+        for micro_step in range(grad_accum_steps):
+            x, y = train_loader.next_batch()
+            x, y = x.to(device), y.to(device)
+            with torch.autocast(device_type=device, dtype=torch.bfloat16): # only put the forward pass in the autocast (optimizer and backprop is outside)
+                logits, loss = model(x, y)
+            # we have to scale the loss to account for the gradient accumulation,
+            # because the gradients just add on each succesive backward(),
+            # addition of graddients correspond to a SUM in the objective, but
+            # instead of a SUM we want MEAN. Scale the loss here so it comes out right
+            loss = loss / grad_accum_steps
+            loss_accum += loss.detach()
+            loss.backward() # Inside loss.backward() there is always a += so we can use gradient acucmulation
         norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0) # Used in GPT-3 that we brought back in GPT-2
         # determine and set the learning for this iteration
         lr = get_lr(step)
@@ -91,7 +108,7 @@ if __name__ == "__main__":
         torch.cuda.synchronize() # wait for GPU to finish work
         t1 = time.time()
         dt = (t1 - t0) # time difference in seconds
-        tokens_processed = train_loader.B * train_loader.T
+        tokens_processed = (train_loader.B * train_loader.T) * grad_accum_steps
         tokens_per_sec = tokens_processed / dt
         tokens_per_sec = (train_loader.B * train_loader.T) / (t1 - t0)
-        print(f"step {step:4d} | loss {loss.item():.6f} | lr {lr:.4e} | norm gradient: {norm:.4f} | dt: {dt*1000:.2f}ms | tok/sec: {tokens_per_sec:.2f}")
+        print(f"step {step:4d} | loss {loss_accum.item():.6f} | lr {lr:.4e} | norm gradient: {norm:.4f} | dt: {dt*1000:.2f}ms | tok/sec: {tokens_per_sec:.2f}")
