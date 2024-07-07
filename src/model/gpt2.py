@@ -208,8 +208,6 @@ class GPT(nn.Module):
                     sd[k].copy_(sd_hf[k])
         
         return model
-    
-
 
 
 if __name__ == "__main__":
