@@ -1,5 +1,6 @@
 /.venv/
 edu_fineweb10B/
+hellaswag/
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
